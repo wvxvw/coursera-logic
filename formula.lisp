@@ -73,7 +73,7 @@
   
   (term
    id
-   (¬ exp #'list)
+   (¬ term #'list)
    (\( exp \) #'second-arg)))
 
 (defun equivalentp (a b) (eql a b))
