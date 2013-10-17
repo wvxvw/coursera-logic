@@ -2,7 +2,7 @@
 ;; http://www.pps.univ-paris-diderot.fr/~jch/software/cl-yacc/
 
 (defpackage coursera-logic
-  (:use cl yacc)
+  (:use cl yacc optima)
   (:export
    #:equivalentp #:impliesp #:reducesp #:defexpression
    #:eitherp #:bothp #:notp #:validp #:unsatisfiablep
@@ -134,6 +134,13 @@
 (defun satisfiesp (values expression)
   (apply expression values))
 
+(defun parse-expression (string)
+  (let* ((raw (yacc:parse-with-lexer
+              (logic-expression-lexer
+               (make-string-input-stream string)) *logic-expression-parser*))
+         (vars (count-variables raw)))
+    (values vars raw)))
+
 (defmacro defexpression (name expression)
   (multiple-value-bind (vars raw) (parse-expression expression)
     `(defun ,name ,vars ,raw)))
@@ -146,13 +153,6 @@
        (setf total-vars (nunion total-vars vars)
              total-exp (cons raw total-exp)))
      :finally (return `(defun ,name ,total-vars (and ,@total-exp)))))
-
-(defun parse-expression (string)
-  (let* ((raw (yacc:parse-with-lexer
-              (logic-expression-lexer
-               (make-string-input-stream string)) *logic-expression-parser*))
-         (vars (count-variables raw)))
-    (values vars raw)))
 
 (defun num-truth-assignments (expression numvars)
   (loop
@@ -181,6 +181,127 @@
             :unless (apply entailing (int->bools i nargs)) :do
             (return)
             :finally (return t))))))
+
+(defun logic-op-p (op)
+  (member op '(notp impliesp reducesp equivalentp eitherp bothp)))
+
+(deftype logic-op () '(satisfies logic-op-p))
+
+(defstruct (logic-expression-base (:type list))
+  (op nil :type logic-op) left)
+
+(defstruct (logic-expression
+             (:type list) (:include logic-expression-base)) right)
+
+(defun logic-expression (op &optional left right)
+  (cond
+    ((and left right) (make-logic-expression :op op :left left :right right))
+    (left (make-logic-expression-base :op op :left left))
+    (t op)))
+
+;; 2. Negations (N):
+
+;; 3. Distribution (D):
+
+;; φ ∨ (φ1 ∨ ... ∨ φn)	→	φ ∨ φ1 ∨ ... ∨ φn
+;; (φ1 ∨ ... ∨ φn) ∨ φ	→	φ1 ∨ ... ∨ φn ∨ φ
+;; φ ∧ (φ1 ∧ ... ∧ φn)	→	φ ∧ φ1 ∧ ... ∧ φn
+;; (φ1 ∧ ... ∧ φn) ∧ φ	→	φ1 ∧ ... ∧ φn ∧ φ
+
+;; 5. Operators (O):
+;;   	φ1 ∨ ... ∨ φ 	→ 	{φ1, ... , φn}
+;;   	φ1 ∧ ... ∧ φn 	→ 	{φ1}, ... , {φn}
+
+(optima:defpattern symbol (n) `(optima:guard ,n (symbolp ,n)))
+
+(defun expression->clausal-step (exp)
+  (optima:match exp
+    ;; 
+    ;; irreducible expression
+    ;; 
+    ((symbol exp) exp)
+    ;; 
+    ;; negation
+    ;;
+    ;; ¬¬φ	→	φ
+    ;; ¬(φ ∧ ψ)	→	¬φ ∨ ¬ψ
+    ;; ¬(φ ∨ ψ)	→	¬φ ∧ ¬ψ
+    ((optima::list 'notp (symbol x)) exp)
+    ((optima::list 'notp (optima::list 'notp a))
+     (expression->clausal-form a))
+    ((optima::list 'notp (optima::list 'bothp a b))
+     (expression->clausal-form
+        (logic-expression
+         'eitherp (logic-expression 'notp a) (logic-expression 'notp b))))
+    ((optima::list 'notp (optima::list 'eitherp a b))
+     (expression->clausal-form
+        (logic-expression
+         'bothp (logic-expression 'notp a) (logic-expression 'notp b))))
+    ;; 
+    ;; implication
+    ;;
+    ;;   	φ ⇒ ψ 	→ 	¬φ ∨ ψ
+    ;;   	φ ⇐ ψ 	→ 	φ ∨ ¬ψ
+    ;;   	φ ⇔ ψ 	→ 	(¬φ ∨ ψ) ∧ (φ ∨ ¬ψ)
+    ((optima::list 'impliesp a b)
+     (logic-expression 'eitherp (logic-expression 'notp a) b))
+    ((optima::list 'reducesp a b)
+     (logic-expression
+      'eitherp (logic-expression 'notp a) (logic-expression 'notp b)))
+    ((optima::list 'equivalentp a b)
+     (logic-expression
+        'bothp
+        (logic-expression 'either (logic-expression 'notp a) b)
+        (logic-expression 'either a (logic-expression 'notp b))))
+    ;;
+    ;; distribution
+    ;;
+    ;; φ ∨ (ψ ∧ χ)	→	(φ ∨ ψ) ∧ (φ ∨ χ)
+    ;; (φ ∧ ψ) ∨ χ	→	(φ ∨ χ) ∧ (ψ ∨ χ)
+    ((optima::list 'eitherp a (optima::list 'bothp b c))
+     (logic-expression
+      'bothp
+      (logic-expression 'eitherp a b)
+      (logic-expression 'eitherp a c)))
+    ((optima::list 'eitherp (optima::list 'bothp a b) c)
+     (logic-expression
+      'bothp
+      (logic-expression 'eitherp a c)
+      (logic-expression 'eitherp b c)))))
+
+(defun expression->clausal-operators (exp)
+  ;;
+  ;; operators
+  ;;
+  ;;   	φ1 ∨ ... ∨ φ 	→ 	{φ1, ... , φn}
+  ;;   	φ1 ∧ ... ∧ φn 	→ 	{φ1}, ... , {φn}
+  (optima:match exp
+    ((symbol a) (list (list exp)))
+    ((optima::list 'notp _) exp)
+    ((optima::list 'eitherp a b)
+     (list
+      (list (expression->clausal-step a)
+            (expression->clausal-step b))))
+    ((optima::list 'both a b)
+     (list (list (expression->clausal-step a))
+           (list (expression->clausal-step b))))
+    (_ (list (list exp)))))
+
+(defun clausal-form-p (exp)
+  (optima:match exp
+    ((symbol a) t)
+    ((optima::list 'notp (symbol a)) t)
+    (_ nil)))
+
+(defun expression->clausal-form (exp)
+  (loop
+     :for exp :in
+     (expression->clausal-operators (expression->clausal-step exp))
+     ;; can be optimized by only processing those, which aren't in CNF
+     :nconc (if (every #'clausal-form-p exp)
+                exp
+                (mapcar #'expression->clausal-form exp))))
+
 ;; tests
 
 (defexpression exercise-0 "(q⇒(r∧¬s))∧s")
