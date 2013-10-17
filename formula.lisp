@@ -275,17 +275,17 @@
   ;;
   ;;   	φ1 ∨ ... ∨ φ 	→ 	{φ1, ... , φn}
   ;;   	φ1 ∧ ... ∧ φn 	→ 	{φ1}, ... , {φn}
-  (optima:match exp
-    ((symbol a) (list (list exp)))
-    ((optima::list 'notp _) exp)
-    ((optima::list 'eitherp a b)
-     (list
+  (multiple-value-call #'list
+   (optima:match exp
+     ((symbol a) (list exp))
+     ((optima::list 'notp _) (list exp))
+     ((optima::list 'eitherp a b)
       (list (expression->clausal-step a)
-            (expression->clausal-step b))))
-    ((optima::list 'both a b)
-     (list (list (expression->clausal-step a))
-           (list (expression->clausal-step b))))
-    (_ (list (list exp)))))
+            (expression->clausal-step b)))
+     ((optima::list 'both a b)
+      (values (list (expression->clausal-step a))
+              (list (expression->clausal-step b))))
+     (_ (list exp)))))
 
 (defun clausal-form-p (exp)
   (optima:match exp
