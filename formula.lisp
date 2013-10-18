@@ -214,7 +214,10 @@
 
 (optima:defpattern symbol (n) `(optima:guard ,n (symbolp ,n)))
 
+(optima:defpattern logop (n) `(optima:guard ,n (logic-op-p ,n)))
+
 (defun expression->clausal-step (exp)
+  (format t "~&expression->clausal-step: ~s" exp)
   (optima:match exp
     ;; 
     ;; irreducible expression
@@ -228,13 +231,13 @@
     ;; ¬(φ ∨ ψ)	→	¬φ ∧ ¬ψ
     ((optima::list 'notp (symbol x)) exp)
     ((optima::list 'notp (optima::list 'notp a))
-     (expression->clausal-form a))
+     (expression->clausal-step a))
     ((optima::list 'notp (optima::list 'bothp a b))
-     (expression->clausal-form
+     (expression->clausal-step
         (logic-expression
          'eitherp (logic-expression 'notp a) (logic-expression 'notp b))))
     ((optima::list 'notp (optima::list 'eitherp a b))
-     (expression->clausal-form
+     (expression->clausal-step
         (logic-expression
          'bothp (logic-expression 'notp a) (logic-expression 'notp b))))
     ;; 
@@ -267,7 +270,8 @@
      (logic-expression
       'bothp
       (logic-expression 'eitherp a c)
-      (logic-expression 'eitherp b c)))))
+      (logic-expression 'eitherp b c)))
+    (_ exp)))
 
 (defun expression->clausal-operators (exp)
   ;;
@@ -275,34 +279,42 @@
   ;;
   ;;   	φ1 ∨ ... ∨ φ 	→ 	{φ1, ... , φn}
   ;;   	φ1 ∧ ... ∧ φn 	→ 	{φ1}, ... , {φn}
+  (format t "~&expression->clausal-operators: ~s" exp)
   (multiple-value-call #'list
    (optima:match exp
-     ((symbol a) (list exp))
-     ((optima::list 'notp _) (list exp))
-     ((optima::list 'eitherp a b)
-      (list (expression->clausal-step a)
-            (expression->clausal-step b)))
-     ((optima::list 'both a b)
-      (values (list (expression->clausal-step a))
-              (list (expression->clausal-step b))))
-     (_ (list exp)))))
+     ((symbol a) exp)
+     ((optima::list 'notp _) exp)
+     ((optima::list 'eitherp a b) (values a b))
+     ((optima::list 'both a b) (values (list a) (list b)))
+     (_ exp))))
 
 (defun clausal-form-p (exp)
-  (optima:match exp
-    ((symbol a) t)
-    ((optima::list 'notp (symbol a)) t)
-    (_ nil)))
+  (or (and (symbolp exp) (not (logic-op-p exp)))
+      (and (consp exp)
+           (or (every #'clausal-form-p exp)
+               (and (eql 'notp (car exp)) (symbolp (cadr exp)))))))
+
+(defun logic-expression-p (exp)
+  (or (and (symbolp exp) (not (logic-op-p exp)))
+      (and (consp exp) (logic-op-p (car exp)))))
 
 (defun expression->clausal-form (exp)
-  (loop
-     :for exp :in
-     (expression->clausal-operators (expression->clausal-step exp))
-     ;; can be optimized by only processing those, which aren't in CNF
-     :nconc (if (every #'clausal-form-p exp)
-                exp
-                (mapcar #'expression->clausal-form exp))))
+  (if (or (symbolp exp) (clausal-form-p exp)) exp
+      (loop
+         :with result := nil
+         :for subexp :in (expression->clausal-operators
+                       (expression->clausal-step exp))
+         :for transformed := (expression->clausal-form subexp)
+         :if (or (symbolp transformed) (logic-expression-p transformed))
+         :do (push transformed result)
+         :else :do (loop :for subexpart :in transformed
+                      :do (push subexpart result))
+         :finally (return result))))
 
 ;; tests
+;; p ∧ q ⇒ r ∨ s
+
+(defvar exercise-8 (nth-value 1 (parse-expression "p ∧ q ⇒ r ∨ s")))
 
 (defexpression exercise-0 "(q⇒(r∧¬s))∧s")
 
